@@ -9,16 +9,12 @@ import urllib
 import yaml
 import argparse
 
-from pysolar import radiation
 from astropy.coordinates import get_sun, AltAz, EarthLocation
 from astropy.time import Time
 
 import rasterio as rs
-from rasterio.plot import show
 
 from pyrocko import orthodrome
-from pysolar.solar import get_altitude, get_azimuth
-from pysolar.radiation import get_radiation_direct
 
 from swissreframe import Coordinate, initialize_reframe
 
