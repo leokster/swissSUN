@@ -6,6 +6,8 @@ import datetime
 import tqdm
 from pathlib import Path
 import urllib
+import yaml
+import argparse
 
 from pysolar import radiation
 from astropy.coordinates import get_sun, AltAz, EarthLocation
@@ -20,9 +22,23 @@ from pysolar.radiation import get_radiation_direct
 
 from swissreframe import Coordinate, initialize_reframe
 
+
+config = yaml.load(open('config.yml', 'r'), Loader=yaml.BaseLoader)
+
+
+
 r = initialize_reframe()
 
-def get_dict_of_tiffs(path="./geo_tiff_links.csv"):
+
+def valid_date(s):
+    try:
+        return datetime.datetime.strptime(s, "%Y-%m-%d %H:%M")
+    except ValueError:
+        msg = "Not a valid date: '{0}'.".format(s)
+        raise argparse.ArgumentTypeError(msg)
+
+
+def get_dict_of_tiffs(path):
     '''
     returns nested dict of such that 
     dict[lat][lon] = url to the geo_tiff
@@ -45,7 +61,7 @@ def cache_geotif(url):
     '''
     returns the cached version of url
     '''
-    cache_dir = "./geotif_cache"
+    cache_dir = config.get("cache_folder")
     Path(cache_dir).mkdir(parents=True, exist_ok=True)
     filename = url.split("/")[-1]
     file_path = os.path.join(cache_dir, filename)
@@ -131,7 +147,7 @@ def get_max_height(r0, altitude, angle):
     the maximal height this second point on earth is allowed to have such that it is not 
     covering r0 from the sun
     '''
-    sea_level = 6371146
+    sea_level = float(config.get("earth_radius"))
     altitude_rad = altitude/180*math.pi
     angle_rad = angle/180*math.pi
     return (r0+sea_level)/math.sin(math.pi/2-altitude_rad-angle_rad)*math.sin(math.pi/2+altitude_rad)-sea_level
@@ -185,10 +201,10 @@ def sun_visibility_check(lat, lon, height, date):
 
     list_of_points = start_list_from_coord(lat,lon, height, date)
 
-    for i in tqdm.tqdm(range(5, 200)):
+    for i in tqdm.tqdm(range(5, 200), disable=not args.verbose):
         get_next_point(list_of_points, get_distance_offset(i))
 
-        if list_of_points[-1]["max_height"]+2<list_of_points[-1]["height"]:
+        if list_of_points[-1]["max_height"]<list_of_points[-1]["height"]:
             break
 
         if list_of_points[-1]["max_height"]> 4000:
@@ -199,7 +215,7 @@ def sun_visibility_check(lat, lon, height, date):
 
 if __name__ == "__main__":
     '''
-    Main idea of the script:
+    Main idea of the script:s
 
     For a given location on earth, described by x0 = (lat, lon, height) and a date we want to estimate whether
     the sun is visible at x0 at date or not. To achieve this we need to know where potential
@@ -211,13 +227,36 @@ if __name__ == "__main__":
     obstacle-candidate. The position of the obstacle-candidate together with the altitude angle of the sun at x0 gives
     also a maximal height the obstacle is allowed to have to not cover the sun. 
     '''
-    dict_of_tiffs = get_dict_of_tiffs()
+    dict_of_tiffs = get_dict_of_tiffs(path = config.get("geo_tiff_links"))
 
-    #the date / time is in UTC
-    date = datetime.datetime(2021, 5, 17, 18, 10, 1, 130320, tzinfo=datetime.timezone.utc)
-    lat = 47.34372
-    lon = 8.53095
-    height = get_height(lat, lon)
+
+    parser = argparse.ArgumentParser(description='Determines wheter a point in Switzerland is sunny or not')
+    parser.add_argument('lat', metavar='LATITUDE', type=float, nargs=None,
+                        help='The latitude of the point of interest')
+    parser.add_argument('lon', metavar='LONGITUDE', type=float, nargs=None,
+                        help='The latitude of the point of interest')
+    parser.add_argument("-r", 
+                        "--height", 
+                        help="The height from sea level. Default is the ground level +2 meters.", 
+                        required=False, 
+                        type=float)
+    parser.add_argument("-d", 
+                        "--date", 
+                        help="The date in UTC- format 'YYYY-MM-DD HH:MM'. Default is now.", 
+                        required=False, 
+                        type=valid_date, default=datetime.datetime.now())
+    parser.add_argument('-v', '--verbose', action='store_true', help='Shows progressbar if set')
+
+    args = parser.parse_args()
+
+    date = args.date
+    lat = args.lat
+    lon = args.lon
+
+    if not args.height:
+        height = get_height(lat, lon)+2
+    else:
+        height = args.height
 
     results = sun_visibility_check(lat, lon, height, date)
 
