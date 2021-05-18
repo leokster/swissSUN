@@ -1,30 +1,18 @@
 import os
-import numpy as np
-import pandas as pd
 import math
 import datetime
 import tqdm
-from pathlib import Path
 import urllib
 import yaml
 import argparse
-
+import numpy as np
+import pandas as pd
+from pathlib import Path
 from astropy.coordinates import get_sun, AltAz, EarthLocation
 from astropy.time import Time
-
 import rasterio as rs
-
 from pyrocko import orthodrome
-
-from swissreframe import Coordinate, initialize_reframe
-
-
-config = yaml.load(open('config.yml', 'r'), Loader=yaml.BaseLoader)
-
-
-
-r = initialize_reframe()
-
+from swissreframe import initialize_reframe
 
 def valid_date(s):
     try:
@@ -32,7 +20,6 @@ def valid_date(s):
     except ValueError:
         msg = "Not a valid date: '{0}'.".format(s)
         raise argparse.ArgumentTypeError(msg)
-
 
 def get_dict_of_tiffs(path):
     '''
@@ -223,9 +210,17 @@ if __name__ == "__main__":
     obstacle-candidate. The position of the obstacle-candidate together with the altitude angle of the sun at x0 gives
     also a maximal height the obstacle is allowed to have to not cover the sun. 
     '''
+
+    #load config file
+    config = yaml.load(open('config.yml', 'r'), Loader=yaml.BaseLoader)
+
+    #initialize the module to load GEO TIFFS
+    r = initialize_reframe()
+
+    #get the dict of all GEO TIFF URLS
     dict_of_tiffs = get_dict_of_tiffs(path = config.get("geo_tiff_links"))
 
-
+    #Argument parsing
     parser = argparse.ArgumentParser(description='Determines wheter a point in Switzerland is sunny or not')
     parser.add_argument('lat', metavar='LATITUDE', type=float, nargs=None,
                         help='The latitude of the point of interest')
@@ -242,13 +237,12 @@ if __name__ == "__main__":
                         required=False, 
                         type=valid_date, default=datetime.datetime.now())
     parser.add_argument('-v', '--verbose', action='store_true', help='Shows progressbar if set')
-
     args = parser.parse_args()
-
     date = args.date
     lat = args.lat
     lon = args.lon
 
+    #If no height is set, then take the ground height + 2 meters
     if not args.height:
         height = get_height(lat, lon)+2
     else:
@@ -257,6 +251,6 @@ if __name__ == "__main__":
     results = sun_visibility_check(lat, lon, height, date)
 
     if (results["max_height"]-results["height"]).min()>0:
-        print("congrats you see the sun")
+        print("YESSS! It's sunny")
     else:
-        print("unfortunately there is no sun anymore. The sun is covered by Lat/Lon: {}, {}".format(results.tail(1)["lat"].values[0], results.tail(1)["lon"].values[0]))
+        print("NO SUN :(. The sun is covered by Lat/Lon: {}, {}".format(results.tail(1)["lat"].values[0], results.tail(1)["lon"].values[0]))
