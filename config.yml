@@ -1,0 +1,3 @@
+geo_tiff_links: geo_tiff_links.csv
+cache_folder: geo_tiff_cache
+earth_radius: 6371146
