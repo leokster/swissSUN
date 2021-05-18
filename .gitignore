@@ -131,3 +131,4 @@ dmypy.json
 
 #project related
 /geotif_cache
+/geo_tiff_cache
