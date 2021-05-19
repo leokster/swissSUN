@@ -11,7 +11,6 @@ from pathlib import Path
 from astropy.coordinates import get_sun, AltAz, EarthLocation
 from astropy.time import Time
 import rasterio as rs
-from pyrocko import orthodrome
 from swissreframe import initialize_reframe
 
 def valid_date(s):
@@ -77,6 +76,67 @@ def get_cartesian(lat, lon):
         ]
     )
 
+def spheric_from_lat_lon(lat, lon, rad=1):
+    '''
+    returns spherical coordinates given lat, lon, [radius] 
+    '''
+    return np.array([rad, (90-lat)/180*math.pi, lon/180*math.pi])
+
+def lat_lon_from_spheric(x0):
+    '''
+    returns lat, lon for an input x0 = (radius, polar, azimuth)
+    '''
+    return -x0[1]*180/math.pi+90, x0[2]*180/math.pi
+
+def spheric_to_cartesian(x0):
+    x = x0[0]*math.cos(x0[2])*math.sin(x0[1])
+    y = x0[0]*math.sin(x0[2])*math.sin(x0[1])
+    z = x0[0]*math.cos(x0[1])
+    return np.array([x, y, z])
+
+def cartesian_to_spheric(x0):
+    r = math.sqrt(np.sum(x0**2))
+    theta = math.acos(x0[2]/r)
+    phi = math.atan2(x0[1], x0[0])
+    return np.array([r, theta, phi])
+
+def rotation_matrix_x(theta):
+    return np.array(
+        [[1,0,0],
+        [0, math.cos(theta), -math.sin(theta)],
+        [0, math.sin(theta), math.cos(theta)]]
+    )
+
+def rotation_matrix_z(phi):
+    return np.array(
+        [[math.cos(phi),-math.sin(phi),0],
+        [math.sin(phi), math.cos(phi), 0],
+        [0, 0, 1]]
+    )
+
+def reparameterize_sphere(x0):
+    '''
+    takes x no as input and returns two functions, which reparameterizes any 
+    input point in spherical coordinates into a coordinate system where x0
+    is the north pole. The first function transforms into the space, where
+    x0 is the north pole, the second function transforms back.
+    '''
+    theta = x0[1]
+    phi = x0[2]-math.pi/2
+    f1 = lambda x: cartesian_to_spheric(
+        rotation_matrix_x(theta) @ rotation_matrix_z(-phi) @ spheric_to_cartesian(x)
+    )
+    f2 = lambda x: cartesian_to_spheric(
+        rotation_matrix_z(phi) @ rotation_matrix_x(-theta) @ spheric_to_cartesian(x)
+    )
+    return f1, f2
+
+def get_great_circle_at_x0(lat, lon, azimuth):
+    x0 = spheric_from_lat_lon(lat, lon)
+    f1, f2 = reparameterize_sphere(x0)
+    great_circle = lambda t: lat_lon_from_spheric(f2(f1(x0)+np.array([0, t*2*math.pi, -azimuth/180*math.pi])))
+    return great_circle
+
 def get_angle_between(lat1, lon1, lat2, lon2):
     '''
     for given coordinates (lat1, lon1) and (lat2, lon2) the function
@@ -97,17 +157,6 @@ def LV95_to_WGS84(lat, lon, height):
     system into the WGS84 system
     '''
     return r.compute_gpsref((lon, lat, height), 'lv95_to_etrf93_geographic')
-
-def add_offset_to_coord(lat, lon, azimuth, distance):
-    '''
-    for given coordinates (lat, lon) the function returns new coordinates (lat, lon)
-    given by "walking" the distance in the azimuth direction
-    '''
-    azimuth_rad = azimuth/180*math.pi
-    east = np.sin(azimuth_rad)*distance
-    north = np.cos(azimuth_rad)*distance
-    return dict(zip(["lat", "lon"], orthodrome.ne_to_latlon(lat, lon, north, east)))
-
 
 def get_solar_radiation(lat, lon, date):
     '''
@@ -139,31 +188,34 @@ def get_distance_offset(i):
     '''
     just a function to get quadratic increasing distant values
     '''
-    return i**2/75
-        
+    return i**3/500/float(config.get("earth_radius"))/math.pi
+
 
 def start_list_from_coord(lat, lon, height, date):
     '''
     initializing a list of point on the earth. the first point is the one for which
     we want to know whether there is sun or not. 
     '''
+    solar = get_solar_radiation(lat,lon,date)
     return [{**{
         "lat": lat,
         "lon": lon, 
         "height": height,
         "date": date,
-    }, **get_solar_radiation(lat,lon,date)}]
+        "great_circle": get_great_circle_at_x0(lat, lon, solar.get("azimuth")),
+    }, **solar}]
 
 def get_next_point(list_of_points, distance):
     '''
     operates on a list. it takes the first element as a base point (the point for which we
     want to get information whether it gets sun or not) 
     '''
-    lat, lon = add_offset_to_coord(
-        list_of_points[-1].get("lat"),
-        list_of_points[-1].get("lon"),
-        list_of_points[-1].get("azimuth"),
-        distance).values()
+    # lat, lon = add_offset_to_coord(
+    #     list_of_points[-1].get("lat"),
+    #     list_of_points[-1].get("lon"),
+    #     list_of_points[-1].get("azimuth"),
+    #     distance).values()
+    lat, lon = list_of_points[0].get("great_circle")(-distance)
     alpha = get_angle_between(list_of_points[0]["lat"], list_of_points[0]["lon"], lat, lon)
     new_point = {**{
         "lat": lat,
@@ -184,7 +236,7 @@ def sun_visibility_check(lat, lon, height, date):
 
     list_of_points = start_list_from_coord(lat,lon, height, date)
 
-    for i in tqdm.tqdm(range(5, 200), disable=not args.verbose):
+    for i in tqdm.tqdm(range(5, 350), disable=not args.verbose):
         get_next_point(list_of_points, get_distance_offset(i))
 
         if list_of_points[-1]["max_height"]<list_of_points[-1]["height"]:
@@ -242,6 +294,7 @@ if __name__ == "__main__":
     lat = args.lat
     lon = args.lon
 
+    
     #If no height is set, then take the ground height + 2 meters
     if not args.height:
         height = get_height(lat, lon)+2
