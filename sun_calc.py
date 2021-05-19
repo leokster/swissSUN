@@ -5,6 +5,7 @@ import tqdm
 import urllib
 import yaml
 import argparse
+import warnings
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -12,6 +13,7 @@ from astropy.coordinates import get_sun, AltAz, EarthLocation
 from astropy.time import Time
 import rasterio as rs
 from swissreframe import initialize_reframe
+from itertools import groupby
 
 def valid_date(s):
     try:
@@ -19,6 +21,20 @@ def valid_date(s):
     except ValueError:
         msg = "Not a valid date: '{0}'.".format(s)
         raise argparse.ArgumentTypeError(msg)
+
+def WGS84_to_LV95(lat, lon, height):
+    '''
+    converts coordinates from the WGS84 system into LV95 Swiss coordinate
+    system 
+    '''
+    return r.compute_gpsref((lon, lat, height), 'etrf93_gepgraphic_to_lv95')
+
+def LV95_to_WGS84(lat, lon, height):
+    '''
+    converts coordinates from the LV95 Swiss coordinate
+    system into the WGS84 system
+    '''
+    return r.compute_gpsref((lon, lat, height), 'lv95_to_etrf93_geographic')
 
 def get_dict_of_tiffs(path):
     '''
@@ -51,14 +67,28 @@ def cache_geotif(url):
         urllib.request.urlretrieve(url, file_path)
     
     return file_path
-    
+
+def get_url_from_coordinates(lat, lon):
+    ch_lon, ch_lat, _ = WGS84_to_LV95(lat, lon, 0)
+    url = dict_of_tiffs.get(int(ch_lat/1000), dict()).get(int(ch_lon/1000))
+    return url
+
+def get_height_multi(coords, url):
+    '''
+    extracts for lat, lon coordinates the corresponding height from
+    SWISSALTI3D Model
+    '''
+    ch_coords = [WGS84_to_LV95(lat, lon, 0) for lat, lon in coords]
+    dataset = rs.open(cache_geotif(url))
+    return [dataset.read(1)[dataset.index(ch_lon, ch_lat)] for ch_lon, ch_lat, _ in ch_coords] 
+
 def get_height(lat, lon):
     '''
     extracts for lat, lon coordinates the corresponding height from
     SWISSALTI3D Model
     '''
     ch_lon, ch_lat, _ = WGS84_to_LV95(lat, lon, 0)
-    url = dict_of_tiffs.get(int(ch_lat/1000)).get(int(ch_lon/1000))
+    url = get_url_from_coordinates(lat, lon)
     dataset = rs.open(cache_geotif(url))
     return dataset.read(1)[dataset.index(ch_lon, ch_lat)]
 
@@ -144,20 +174,6 @@ def get_angle_between(lat1, lon1, lat2, lon2):
     '''
     return math.acos(np.dot(get_cartesian(lat1, lon1), get_cartesian(lat2, lon2)))/math.pi*180
 
-def WGS84_to_LV95(lat, lon, height):
-    '''
-    converts coordinates from the WGS84 system into LV95 Swiss coordinate
-    system 
-    '''
-    return r.compute_gpsref((lon, lat, height), 'etrf93_gepgraphic_to_lv95')
-
-def LV95_to_WGS84(lat, lon, height):
-    '''
-    converts coordinates from the LV95 Swiss coordinate
-    system into the WGS84 system
-    '''
-    return r.compute_gpsref((lon, lat, height), 'lv95_to_etrf93_geographic')
-
 def get_solar_radiation(lat, lon, date):
     '''
     get all solar properties for a location (lat, lon) on a date
@@ -184,69 +200,49 @@ def get_max_height(r0, altitude, angle):
     angle_rad = angle/180*math.pi
     return (r0+sea_level)/math.sin(math.pi/2-altitude_rad-angle_rad)*math.sin(math.pi/2+altitude_rad)-sea_level
 
-def get_distance_offset(i):
+def get_distance_offset(i, delta=50):
     '''
     just a function to get quadratic increasing distant values
     '''
-    return i**3/500/float(config.get("earth_radius"))/math.pi
+    return i*1/float(config.get("earth_radius"))/2/math.pi*delta
 
-
-def start_list_from_coord(lat, lon, height, date):
-    '''
-    initializing a list of point on the earth. the first point is the one for which
-    we want to know whether there is sun or not. 
-    '''
-    solar = get_solar_radiation(lat,lon,date)
-    return [{**{
+def get_location_on_great_circle(great_circle, t, h0, altitude):
+    lat, lon = great_circle(t)
+    return {
         "lat": lat,
-        "lon": lon, 
-        "height": height,
-        "date": date,
-        "great_circle": get_great_circle_at_x0(lat, lon, solar.get("azimuth")),
-    }, **solar}]
-
-def get_next_point(list_of_points, distance):
-    '''
-    operates on a list. it takes the first element as a base point (the point for which we
-    want to get information whether it gets sun or not) 
-    '''
-    # lat, lon = add_offset_to_coord(
-    #     list_of_points[-1].get("lat"),
-    #     list_of_points[-1].get("lon"),
-    #     list_of_points[-1].get("azimuth"),
-    #     distance).values()
-    lat, lon = list_of_points[0].get("great_circle")(-distance)
-    alpha = get_angle_between(list_of_points[0]["lat"], list_of_points[0]["lon"], lat, lon)
-    new_point = {**{
-        "lat": lat,
-        "lon": lon, 
-        "height": get_height(lat, lon),
-        "date": list_of_points[0]["date"],
-        "max_height": get_max_height(list_of_points[0]["height"], list_of_points[0]["altitude"], alpha),
-    }, **get_solar_radiation(lat,lon,list_of_points[0]["date"])}
-    list_of_points.append(new_point)
+        "lon": lon,
+        "max_height": get_max_height(h0, altitude, t*360),
+        "alpha": t*360,
+        "url": get_url_from_coordinates(lat, lon)
+    }
 
 def sun_visibility_check(lat, lon, height, date):
-    '''
-    run full visibility check for the coordinates (lat, lon, height) at date
-    returns a dataframe describing the results. the first row is the point of interest.
-    the following rows describe potential obstacles. if max_height > height, the corresponding
-    obstacle-candidate is not covering the sun. otherwise it is covering the sun. 
-    '''
+    solar = get_solar_radiation(lat,lon,date)
+    great_circle = get_great_circle_at_x0(lat, lon, solar.get("azimuth"))
 
-    list_of_points = start_list_from_coord(lat,lon, height, date)
-
-    for i in tqdm.tqdm(range(5, 350), disable=not args.verbose):
-        get_next_point(list_of_points, get_distance_offset(i))
-
-        if list_of_points[-1]["max_height"]<list_of_points[-1]["height"]:
+    list_of_points = [get_location_on_great_circle(great_circle, get_distance_offset(t), height, solar.get("altitude"))
+                   for t in range(5, 3000)]
+    grouped = groupby(list_of_points, lambda x: x["url"])
+    for k, v in tqdm.tqdm(grouped, disable=not args.verbose):
+        vv = list(v)
+        if k is None:
+            raise Warning("Point Lat/Lon {}, {} is not in Switzerland, be careful".format(vv[0].get("lat"), vv[0].get("lon")))
+            #warnings.warn("Point Lat/Lon {}, {} is not in Switzerland, be careful".format(vv[0].get("lat"), vv[0].get("lon")), Warning)
+            #continue
+        heights = np.array(get_height_multi([(ll["lat"], ll["lon"]) for ll in vv], k))
+        max_heights = np.array([ll["max_height"] for ll in vv])
+        if min(max_heights-heights)<0:
+            if args.verbose:
+                idx = (np.argwhere(max_heights-heights<0))[0][0]
+                return "Lat/Lon: {}, {}   , height: {}  max_height:{}".format(vv[idx].get("lat"), vv[idx].get("lon"), heights[idx], vv[idx].get("max_height"))
+            else:
+                return "The sun is not visible"
+        if min(max_heights-heights)>5000:
             break
 
-        if list_of_points[-1]["max_height"]> 4000:
-            break
-
-    results = pd.DataFrame(list_of_points)
-    return results
+    if args.verbose:
+        return "The sun should be visible. Checked for obsacles in a range of {:.2f} km".format(list_of_points[-1].get("alpha")/180000*math.pi*float(config.get("earth_radius")))
+    return "The sun should be visible"
 
 if __name__ == "__main__":
     '''
@@ -301,9 +297,6 @@ if __name__ == "__main__":
     else:
         height = args.height
 
-    results = sun_visibility_check(lat, lon, height, date)
+    result = sun_visibility_check(lat, lon, height, date)
 
-    if (results["max_height"]-results["height"]).min()>0:
-        print("YESSS! It's sunny")
-    else:
-        print("NO SUN :(. The sun is covered by Lat/Lon: {}, {}".format(results.tail(1)["lat"].values[0], results.tail(1)["lon"].values[0]))
+    print(result)
