@@ -34,7 +34,13 @@ To compute the sunrise and sunset at (47.36514, 8.54004) on March 2nd 2021 run
 python sun_calc.py 47.36514 8.54004 -c 2021-03-02
 ```
 
+The verbose flag ```-v``` or ```--verbose``` can be set to show progress bars during calculation.
+
 
 
 ## Remark
 The code might take a while the first few times, since it has to download and cache the GEO TIFFS
+
+
+## Data Source
+The model works only in Switzerland and uses the [swissALTI3D](https://www.swisstopo.admin.ch/de/geodata/height/alti3d.html) topographical model of Switzerland. To get the sun position we use the Python package [astropy](https://www.astropy.org). A recent version of the GEO TIFFS link list can be downloaded [here](https://ogd.swisstopo.admin.ch/resources/ch.swisstopo.swissalti3d-2eb0dsEH.csv).
