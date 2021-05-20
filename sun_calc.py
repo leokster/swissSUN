@@ -12,12 +12,30 @@ from pathlib import Path
 from astropy.coordinates import get_sun, AltAz, EarthLocation
 from astropy.time import Time
 import rasterio as rs
+from rasterio.errors import RasterioIOError
 from swissreframe import initialize_reframe
 from itertools import groupby
+import logging
+
+logging.basicConfig(filename="log.log",
+                            filemode='a',
+                            format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
+                            datefmt='%H:%M:%S',
+                            level=logging.INFO)
+
+logging.info("Started siwssSUN")
+
+
+def valid_datetime(s):
+    try:
+        return datetime.datetime.strptime(s, "%Y-%m-%d %H:%M")
+    except ValueError:
+        msg = "Not a valid date: '{0}'.".format(s)
+        raise argparse.ArgumentTypeError(msg)
 
 def valid_date(s):
     try:
-        return datetime.datetime.strptime(s, "%Y-%m-%d %H:%M")
+        return datetime.datetime.strptime(s, "%Y-%m-%d")
     except ValueError:
         msg = "Not a valid date: '{0}'.".format(s)
         raise argparse.ArgumentTypeError(msg)
@@ -80,7 +98,22 @@ def get_height_multi(coords, url):
     '''
     ch_coords = [WGS84_to_LV95(lat, lon, 0) for lat, lon in coords]
     dataset = rs.open(cache_geotif(url))
-    return [dataset.read(1)[dataset.index(ch_lon, ch_lat)] for ch_lon, ch_lat, _ in ch_coords] 
+    try:
+        result = [dataset.read(1)[dataset.index(ch_lon, ch_lat)] for ch_lon, ch_lat, _ in ch_coords]
+    except RasterioIOError as ex:
+        logging.error(
+            " ".join(
+                ["RasterIO Error while processing", 
+                "(",
+                str(coords[0][0]),
+                ",",
+                str(coords[0][1]),
+                ")"]
+            ))
+        return([0 for _ in ch_coords])
+        
+    dataset.close()
+    return result
 
 def get_height(lat, lon):
     '''
@@ -151,7 +184,7 @@ def reparameterize_sphere(x0):
     is the north pole. The first function transforms into the space, where
     x0 is the north pole, the second function transforms back.
     '''
-    theta = x0[1]
+    theta = x0[1]-0.00000000001
     phi = x0[2]-math.pi/2
     f1 = lambda x: cartesian_to_spheric(
         rotation_matrix_x(theta) @ rotation_matrix_z(-phi) @ spheric_to_cartesian(x)
@@ -164,7 +197,7 @@ def reparameterize_sphere(x0):
 def get_great_circle_at_x0(lat, lon, azimuth):
     x0 = spheric_from_lat_lon(lat, lon)
     f1, f2 = reparameterize_sphere(x0)
-    great_circle = lambda t: lat_lon_from_spheric(f2(f1(x0)+np.array([0, t*2*math.pi, -azimuth/180*math.pi])))
+    great_circle = lambda t: lat_lon_from_spheric(f2(f1(x0)+np.array([0, t*2*math.pi, azimuth/180*math.pi])))
     return great_circle
 
 def get_angle_between(lat1, lon1, lat2, lon2):
@@ -216,33 +249,36 @@ def get_location_on_great_circle(great_circle, t, h0, altitude):
         "url": get_url_from_coordinates(lat, lon)
     }
 
-def sun_visibility_check(lat, lon, height, date):
+def sun_visibility_check(lat, lon, height, date, silent=False, verbose=False):
     solar = get_solar_radiation(lat,lon,date)
     great_circle = get_great_circle_at_x0(lat, lon, solar.get("azimuth"))
 
     list_of_points = [get_location_on_great_circle(great_circle, get_distance_offset(t), height, solar.get("altitude"))
                    for t in range(5, 3000)]
     grouped = groupby(list_of_points, lambda x: x["url"])
-    for k, v in tqdm.tqdm(grouped, disable=not args.verbose):
+    for k, v in tqdm.tqdm(grouped, disable=verbose):
         vv = list(v)
         if k is None:
-            raise Warning("Point Lat/Lon {}, {} is not in Switzerland, be careful".format(vv[0].get("lat"), vv[0].get("lon")))
-            #warnings.warn("Point Lat/Lon {}, {} is not in Switzerland, be careful".format(vv[0].get("lat"), vv[0].get("lon")), Warning)
-            #continue
+            #raise Warning("Point Lat/Lon {}, {} is not in Switzerland, be careful".format(vv[0].get("lat"), vv[0].get("lon")))
+            logging.warning("Point Lat/Lon {}, {} is not in Switzerland, be careful".format(vv[0].get("lat"), vv[0].get("lon")))
+            continue
         heights = np.array(get_height_multi([(ll["lat"], ll["lon"]) for ll in vv], k))
         max_heights = np.array([ll["max_height"] for ll in vv])
         if min(max_heights-heights)<0:
-            if args.verbose:
+            if not silent:
                 idx = (np.argwhere(max_heights-heights<0))[0][0]
-                return "Lat/Lon: {}, {}   , height: {}  max_height:{}".format(vv[idx].get("lat"), vv[idx].get("lon"), heights[idx], vv[idx].get("max_height"))
-            else:
-                return "The sun is not visible"
+                print("Lat/Lon: {}, {}   , height: {}  max_height:{}".format(vv[idx].get("lat"), vv[idx].get("lon"), heights[idx], vv[idx].get("max_height")))
+        
+            return False
         if min(max_heights-heights)>5000:
             break
 
-    if args.verbose:
-        return "The sun should be visible. Checked for obsacles in a range of {:.2f} km".format(list_of_points[-1].get("alpha")/180000*math.pi*float(config.get("earth_radius")))
-    return "The sun should be visible"
+    if args.verbose and not silent:
+        print("The sun should be visible. Checked for obstacles in a range of {:.2f} km".format(list_of_points[-1].get("alpha")/180000*math.pi*float(config.get("earth_radius"))))
+    elif not silent:
+        print("The sun should be visible")
+    
+    return True
 
 if __name__ == "__main__":
     '''
@@ -281,22 +317,42 @@ if __name__ == "__main__":
                         type=float)
     parser.add_argument("-d", 
                         "--date", 
-                        help="The date in UTC- format 'YYYY-MM-DD HH:MM'. Default is now.", 
+                        help="The datetime in UTC in the format 'YYYY-MM-DD HH:MM' to request \
+                        whether the sun in visible. The default value is now.", 
                         required=False, 
-                        type=valid_date, default=datetime.datetime.now())
+                        type=valid_datetime, default=datetime.datetime.now())
+    parser.add_argument("-c", 
+                        "--complete", 
+                        help="The date in format 'YYYY-MM-DD' to request sunset and sunrise", 
+                        required=False, 
+                        type=valid_date)
     parser.add_argument('-v', '--verbose', action='store_true', help='Shows progressbar if set')
     args = parser.parse_args()
     date = args.date
     lat = args.lat
     lon = args.lon
 
-    
+
     #If no height is set, then take the ground height + 2 meters
     if not args.height:
         height = get_height(lat, lon)+2
     else:
         height = args.height
 
-    result = sun_visibility_check(lat, lon, height, date)
 
-    print(result)
+    if args.complete:
+        dt = args.complete
+        from_dt =  dt.replace(hour=2, minute=0, second=0, microsecond=0)
+        to_dt = dt+datetime.timedelta(hours=21)
+        dates = pd.date_range(from_dt, to_dt, freq="10min")
+        memory = False
+        for dd in tqdm.tqdm(dates, disable=not args.verbose):
+            if not memory and sun_visibility_check(lat, lon, height, dd, silent=True):
+                print("Sunrise at: {}".format(dd))
+                memory = True
+            
+            if memory and not sun_visibility_check(lat, lon, height, dd, silent=True):
+                print("Sunset at: {}".format(dd))
+                memory = False
+    else:
+        sun_visibility_check(lat, lon, height, date, verbose=not args.verbose)

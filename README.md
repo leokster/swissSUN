@@ -29,6 +29,10 @@ To compute if the sun is visible at (47.36514, 8.54004) on March 2nd 2021, 16:00
 python sun_calc.py 47.36514 8.54004 -d "2021-03-02 16:00" -r 1000
 ```
 
+To compute the sunrise and sunset at (47.36514, 8.54004) on March 2nd 2021 run
+```
+python sun_calc.py 47.36514 8.54004 -c 2021-03-02
+```
 
 
 
