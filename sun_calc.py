@@ -16,6 +16,9 @@ from rasterio.errors import RasterioIOError
 from swissreframe import initialize_reframe
 from itertools import groupby
 import logging
+import requests
+
+requests.packages.urllib3.disable_warnings()
 
 logging.basicConfig(filename="log.log",
                             filemode='a',
@@ -82,7 +85,10 @@ def cache_geotif(url):
     filename = url.split("/")[-1]
     file_path = os.path.join(cache_dir, filename)
     if not os.path.isfile(file_path):
-        urllib.request.urlretrieve(url, file_path)
+        with open(file_path, 'wb') as f:
+            resp = requests.get(url, verify=False)
+            f.write(resp.content)
+        #urllib.request.urlretrieve(url, file_path)
     
     return file_path
 
