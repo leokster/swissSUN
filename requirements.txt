@@ -1,8 +1,7 @@
-numpy==1.19.1
-tqdm==4.60.0
-swissREFRAME==1.1.2
-pyrocko==2021.4.2
 rasterio==1.2.3
+numpy==1.19.1
 astropy==4.2.1
 pandas==1.1.0
+swissREFRAME==1.1.2
+tqdm==4.60.0
 PyYAML==5.4.1
