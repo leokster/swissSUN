@@ -256,7 +256,7 @@ def sun_visibility_check(lat, lon, height, date, silent=False, verbose=False):
     list_of_points = [get_location_on_great_circle(great_circle, get_distance_offset(t), height, solar.get("altitude"))
                    for t in range(5, 3000)]
     grouped = groupby(list_of_points, lambda x: x["url"])
-    for k, v in tqdm.tqdm(grouped, disable=verbose):
+    for k, v in tqdm.tqdm(grouped, disable=not verbose):
         vv = list(v)
         if k is None:
             #raise Warning("Point Lat/Lon {}, {} is not in Switzerland, be careful".format(vv[0].get("lat"), vv[0].get("lon")))
@@ -273,7 +273,7 @@ def sun_visibility_check(lat, lon, height, date, silent=False, verbose=False):
         if min(max_heights-heights)>5000:
             break
 
-    if args.verbose and not silent:
+    if verbose and not silent:
         print("The sun should be visible. Checked for obstacles in a range of {:.2f} km".format(list_of_points[-1].get("alpha")/180000*math.pi*float(config.get("earth_radius"))))
     elif not silent:
         print("The sun should be visible")
@@ -347,12 +347,12 @@ if __name__ == "__main__":
         dates = pd.date_range(from_dt, to_dt, freq="10min")
         memory = False
         for dd in tqdm.tqdm(dates, disable=not args.verbose):
-            if not memory and sun_visibility_check(lat, lon, height, dd, silent=True):
+            if not memory and sun_visibility_check(lat, lon, height, dd, silent=True, verbose=False):
                 print("Sunrise at: {}".format(dd))
                 memory = True
             
-            if memory and not sun_visibility_check(lat, lon, height, dd, silent=True):
+            if memory and not sun_visibility_check(lat, lon, height, dd, silent=True, verbose=False):
                 print("Sunset at: {}".format(dd))
                 memory = False
     else:
-        sun_visibility_check(lat, lon, height, date, verbose=not args.verbose)
+        sun_visibility_check(lat, lon, height, date, verbose=args.verbose)
