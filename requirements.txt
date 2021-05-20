@@ -5,3 +5,5 @@ pandas==1.1.0
 swissREFRAME==1.1.2
 tqdm==4.60.0
 PyYAML==5.4.1
+JPype1==1.2.1
+requests==2.25.1
